@@ -5,113 +5,135 @@ import subprocess
 import threading
 import time
 import stat
+import re
 from flask import Flask, Response, jsonify
 
 app = Flask(__name__)
 
-# ========== 配置 ==========
 UUID = os.environ.get("UUID", "f929c4da-dc2e-4e0d-9a6f-1799036af214")
 PORT = int(os.environ.get("PORT", "8001"))
 NAME = os.environ.get("NAME", "dcdeploy-node")
-DOMAIN = os.environ.get("DOMAIN", "")
-
 WORK_DIR = "/tmp"
+ARGO_DOMAIN_FILE = os.path.join(WORK_DIR, "argo_domain.txt")
+argo_domain_cache = ""
 
-# ========== 下载 sing-box ==========
-def download_singbox():
-    singbox_path = "/usr/local/bin/sing-box"
-    if os.path.exists(singbox_path):
-        return singbox_path
-    singbox_path = os.path.join(WORK_DIR, "sing-box")
-    if os.path.exists(singbox_path):
-        return singbox_path
-    print("[*] Downloading sing-box...")
-    url = "https://github.com/SagerNet/sing-box/releases/download/v1.8.0/sing-box-1.8.0-linux-amd64.tar.gz"
-    subprocess.run(f"wget -q -O /tmp/sb.tar.gz '{url}'", shell=True)
-    subprocess.run("tar -xzf /tmp/sb.tar.gz -C /tmp/", shell=True)
-    subprocess.run("find /tmp -name 'sing-box' -type f | head -1 | xargs -I{{}} mv {{}} /tmp/sing-box", shell=True)
-    os.chmod(singbox_path, stat.S_IRWXU)
-    return singbox_path
+def get_argo_domain():
+    global argo_domain_cache
+    if argo_domain_cache:
+        return argo_domain_cache
+    if os.path.exists(ARGO_DOMAIN_FILE):
+        with open(ARGO_DOMAIN_FILE) as f:
+            argo_domain_cache = f.read().strip()
+    return argo_domain_cache
 
-# ========== sing-box 配置（VLESS + H2） ==========
-def write_singbox_config():
+def generate_vmess_link(domain):
     config = {
-        "log": {"level": "info"},
-        "inbounds": [
-            {
-                "type": "vless",
-                "listen": "0.0.0.0",
-                "listen_port": PORT,
-                "users": [{"uuid": UUID, "flow": ""}],
-                "transport": {
-                    "type": "http",
-                    "host": [DOMAIN] if DOMAIN else [],
-                    "path": "/vless"
-                }
-            }
-        ],
-        "outbounds": [
-            {"type": "direct", "tag": "direct"}
-        ]
+        "v": "2", "ps": NAME, "add": domain, "port": "443",
+        "id": UUID, "aid": "0", "scy": "auto", "net": "ws",
+        "type": "none", "host": domain, "path": "/",
+        "tls": "tls", "sni": domain, "alpn": ""
     }
-    config_path = os.path.join(WORK_DIR, "config.json")
-    with open(config_path, "w") as f:
-        json.dump(config, f, indent=2)
-    return config_path
+    return "vmess://" + base64.b64encode(json.dumps(config).encode()).decode()
 
-# ========== 启动 sing-box ==========
-def start_singbox():
-    singbox_path = download_singbox()
-    config_path = write_singbox_config()
-    print("[*] Starting sing-box on port", PORT)
+def start_xray():
+    xray_path = os.path.join(WORK_DIR, "xray")
+    if not os.path.exists(xray_path):
+        print("[*] Downloading Xray...")
+        subprocess.run(
+            "wget -q -O /tmp/xray.zip "
+            "'https://github.com/XTLS/Xray-core/releases/download/v1.8.11/Xray-linux-64.zip'",
+            shell=True
+        )
+        subprocess.run("unzip -o /tmp/xray.zip xray -d /tmp/", shell=True)
+        os.chmod(xray_path, stat.S_IRWXU)
+
+    config = {
+        "inbounds": [{
+            "port": 8444,
+            "listen": "127.0.0.1",
+            "protocol": "vmess",
+            "settings": {"clients": [{"id": UUID, "alterId": 0}]},
+            "streamSettings": {
+                "network": "ws",
+                "wsSettings": {"path": "/"}
+            }
+        }],
+        "outbounds": [{"protocol": "freedom"}]
+    }
+    with open(os.path.join(WORK_DIR, "xray_config.json"), "w") as f:
+        json.dump(config, f)
+
+    print("[*] Starting Xray...")
     subprocess.Popen(
-        [singbox_path, "run", "-c", config_path],
-        stdout=subprocess.PIPE,
-        stderr=subprocess.PIPE
+        [xray_path, "run", "-c", os.path.join(WORK_DIR, "xray_config.json")],
+        stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL
     )
-    time.sleep(2)
-    print("[*] sing-box started.")
+    time.sleep(1)
+    print("[*] Xray started.")
 
-# ========== 生成 VLESS H2 节点链接 ==========
-def generate_vless_link():
-    if not DOMAIN:
-        return None
-    link = (
-        f"vless://{UUID}@{DOMAIN}:443"
-        f"?encryption=none&security=tls&sni={DOMAIN}"
-        f"&type=h2&path=%2Fvless&host={DOMAIN}"
-        f"#{NAME}"
-    )
-    return link
+def start_argo():
+    global argo_domain_cache
+    cf_path = os.path.join(WORK_DIR, "cloudflared")
+    if not os.path.exists(cf_path):
+        print("[*] Downloading cloudflared...")
+        subprocess.run(
+            f"wget -q -O {cf_path} "
+            "'https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-amd64'",
+            shell=True
+        )
+        os.chmod(cf_path, stat.S_IRWXU)
 
-# ========== 路由 ==========
+    print("[*] Starting Argo...")
+    log_path = os.path.join(WORK_DIR, "argo.log")
+    with open(log_path, "w") as log_file:
+        subprocess.Popen(
+            [cf_path, "tunnel", "--url", "http://127.0.0.1:8444", "--no-autoupdate"],
+            stdout=log_file, stderr=log_file
+        )
+
+    for _ in range(30):
+        time.sleep(2)
+        try:
+            with open(log_path) as f:
+                content = f.read()
+            match = re.search(r'https://([a-zA-Z0-9\-]+\.trycloudflare\.com)', content)
+            if match:
+                domain = match.group(1)
+                argo_domain_cache = domain
+                with open(ARGO_DOMAIN_FILE, "w") as f:
+                    f.write(domain)
+                print(f"[*] Argo domain: {domain}")
+                return
+        except:
+            pass
+    print("[!] Argo domain not found")
+
 @app.route('/')
 def index():
     return Response("OK", mimetype='text/plain')
 
 @app.route('/sub')
 def sub():
-    link = generate_vless_link()
-    if not link:
-        return Response("Please set DOMAIN environment variable.", status=503)
-    encoded = base64.b64encode(link.encode()).decode()
+    domain = get_argo_domain()
+    if not domain:
+        return Response("Not ready, retry in 1 min.", status=503)
+    encoded = base64.b64encode(generate_vmess_link(domain).encode()).decode()
     return Response(encoded, mimetype='text/plain')
 
 @app.route('/info')
 def info():
-    link = generate_vless_link()
+    domain = get_argo_domain()
+    if not domain:
+        return jsonify({"status": "Argo not ready, retry in 1 min."})
     return jsonify({
-        "name": NAME,
-        "domain": DOMAIN or "not set",
-        "port": 443,
-        "uuid": UUID,
-        "path": "/vless",
-        "network": "h2",
-        "tls": "tls",
-        "vless_link": link or "Set DOMAIN env var first"
+        "name": NAME, "argo_domain": domain,
+        "port": 443, "uuid": UUID,
+        "path": "/", "network": "ws", "tls": "tls",
+        "vmess_link": generate_vmess_link(domain)
     })
 
-# ========== 启动 ==========
 if __name__ == '__main__':
-    threading.Thread(target=start_singbox, daemon=True).start()
+    threading.Thread(target=start_xray, daemon=True).start()
+    time.sleep(2)
+    threading.Thread(target=start_argo, daemon=True).start()
     app.run(host='0.0.0.0', port=PORT)
