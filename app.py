@@ -92,4 +92,25 @@ def index():
 def sub():
     link = generate_vless_link()
     if not link:
-        return Response("Please set
+        return Response("Please set DOMAIN environment variable.", status=503)
+    encoded = base64.b64encode(link.encode()).decode()
+    return Response(encoded, mimetype='text/plain')
+
+@app.route('/info')
+def info():
+    link = generate_vless_link()
+    return jsonify({
+        "name": NAME,
+        "domain": DOMAIN or "not set",
+        "port": 443,
+        "uuid": UUID,
+        "path": "/vless",
+        "network": "httpupgrade",
+        "tls": "tls",
+        "vless_link": link or "Set DOMAIN env var first"
+    })
+
+# ========== 启动 ==========
+if __name__ == '__main__':
+    threading.Thread(target=start_singbox, daemon=True).start()
+    app.run(host='0.0.0.0', port=PORT)
