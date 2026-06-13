@@ -5,8 +5,7 @@ import subprocess
 import threading
 import time
 import stat
-from flask import Flask, Response, jsonify, request
-from functools import wraps
+from flask import Flask, Response, jsonify
 
 app = Flask(__name__)
 
@@ -14,21 +13,9 @@ app = Flask(__name__)
 UUID = os.environ.get("UUID", "f929c4da-dc2e-4e0d-9a6f-1799036af214")
 PORT = int(os.environ.get("PORT", "8001"))
 NAME = os.environ.get("NAME", "dcdeploy-node")
-DOMAIN = os.environ.get("DOMAIN", "https://donna-fy5qjvjgoq.dcdeploy.cloud")        # 你的服务域名，部署后填入
-ACCESS_TOKEN = os.environ.get("ACCESS_TOKEN", "")
+DOMAIN = os.environ.get("DOMAIN", "")
 
 WORK_DIR = "/tmp"
-
-# ========== 鉴权 ==========
-def require_token(f):
-    @wraps(f)
-    def decorated(*args, **kwargs):
-        if ACCESS_TOKEN:
-            token = request.args.get("token") or request.headers.get("X-Token")
-            if token != ACCESS_TOKEN:
-                return Response("Unauthorized", status=401)
-        return f(*args, **kwargs)
-    return decorated
 
 # ========== 下载 sing-box ==========
 def download_singbox():
@@ -42,12 +29,11 @@ def download_singbox():
     url = "https://github.com/SagerNet/sing-box/releases/download/v1.8.0/sing-box-1.8.0-linux-amd64.tar.gz"
     subprocess.run(f"wget -q -O /tmp/sb.tar.gz '{url}'", shell=True)
     subprocess.run("tar -xzf /tmp/sb.tar.gz -C /tmp/", shell=True)
-    subprocess.run("find /tmp -name 'sing-box' -type f ! -name '*.tar.gz' | head -1 | xargs -I{{}} mv {{}} /tmp/sing-box", shell=True)
+    subprocess.run("find /tmp -name 'sing-box' -type f | head -1 | xargs -I{{}} mv {{}} /tmp/sing-box", shell=True)
     os.chmod(singbox_path, stat.S_IRWXU)
-    print("[*] sing-box ready.")
     return singbox_path
 
-# ========== 生成 sing-box 配置（VMess + WS） ==========
+# ========== sing-box 配置 ==========
 def write_singbox_config():
     config = {
         "log": {"level": "info"},
@@ -64,48 +50,45 @@ def write_singbox_config():
             }
         ],
         "outbounds": [
-            {"type": "direct", "tag": "direct"},
-            {"type": "block", "tag": "block"}
+            {"type": "direct", "tag": "direct"}
         ]
     }
     config_path = os.path.join(WORK_DIR, "config.json")
     with open(config_path, "w") as f:
         json.dump(config, f, indent=2)
-    print("[*] sing-box config written.")
     return config_path
 
 # ========== 启动 sing-box ==========
 def start_singbox():
     singbox_path = download_singbox()
     config_path = write_singbox_config()
-    print("[*] Starting sing-box...")
+    print("[*] Starting sing-box on port", PORT)
     subprocess.Popen(
         [singbox_path, "run", "-c", config_path],
         stdout=subprocess.PIPE,
         stderr=subprocess.PIPE
     )
     time.sleep(2)
-    print("[*] sing-box started on port", PORT)
+    print("[*] sing-box started.")
 
 # ========== 生成节点链接 ==========
 def generate_vmess_link():
-    domain = DOMAIN or ""
-    if not domain:
+    if not DOMAIN:
         return None
     config = {
         "v": "2",
         "ps": NAME,
-        "add": domain,
+        "add": DOMAIN,
         "port": "443",
         "id": UUID,
         "aid": "0",
         "scy": "auto",
         "net": "ws",
         "type": "none",
-        "host": domain,
+        "host": DOMAIN,
         "path": "/vmess",
         "tls": "tls",
-        "sni": domain,
+        "sni": DOMAIN,
         "alpn": ""
     }
     encoded = base64.b64encode(json.dumps(config).encode()).decode()
@@ -117,26 +100,19 @@ def index():
     return Response("OK", mimetype='text/plain')
 
 @app.route('/sub')
-@require_token
 def sub():
     link = generate_vmess_link()
     if not link:
-        return Response(
-            "Please set DOMAIN environment variable to your service domain.\n"
-            "Example: gilli-fy5qjvjgoq.dcdeploy.cloud",
-            status=503
-        )
+        return Response("Please set DOMAIN environment variable.", status=503)
     encoded = base64.b64encode(link.encode()).decode()
     return Response(encoded, mimetype='text/plain')
 
 @app.route('/info')
-@require_token
 def info():
     link = generate_vmess_link()
-    domain = DOMAIN or "not set"
     return jsonify({
         "name": NAME,
-        "domain": domain,
+        "domain": DOMAIN or "not set",
         "port": 443,
         "uuid": UUID,
         "path": "/vmess",
