@@ -33,7 +33,7 @@ def download_singbox():
     os.chmod(singbox_path, stat.S_IRWXU)
     return singbox_path
 
-# ========== sing-box 配置（VLESS + HTTPUpgrade） ==========
+# ========== sing-box 配置（VLESS + H2） ==========
 def write_singbox_config():
     config = {
         "log": {"level": "info"},
@@ -44,7 +44,8 @@ def write_singbox_config():
                 "listen_port": PORT,
                 "users": [{"uuid": UUID, "flow": ""}],
                 "transport": {
-                    "type": "httpupgrade",
+                    "type": "http",
+                    "host": [DOMAIN] if DOMAIN else [],
                     "path": "/vless"
                 }
             }
@@ -71,14 +72,14 @@ def start_singbox():
     time.sleep(2)
     print("[*] sing-box started.")
 
-# ========== 生成 VLESS 节点链接 ==========
+# ========== 生成 VLESS H2 节点链接 ==========
 def generate_vless_link():
     if not DOMAIN:
         return None
     link = (
         f"vless://{UUID}@{DOMAIN}:443"
         f"?encryption=none&security=tls&sni={DOMAIN}"
-        f"&type=httpupgrade&path=%2Fvless&host={DOMAIN}"
+        f"&type=h2&path=%2Fvless&host={DOMAIN}"
         f"#{NAME}"
     )
     return link
@@ -105,7 +106,7 @@ def info():
         "port": 443,
         "uuid": UUID,
         "path": "/vless",
-        "network": "httpupgrade",
+        "network": "h2",
         "tls": "tls",
         "vless_link": link or "Set DOMAIN env var first"
     })
