@@ -13,7 +13,7 @@ app = Flask(__name__)
 UUID = os.environ.get("UUID", "f929c4da-dc2e-4e0d-9a6f-1799036af214")
 PORT = int(os.environ.get("PORT", "8001"))
 NAME = os.environ.get("NAME", "dcdeploy-node")
-DOMAIN = os.environ.get("DOMAIN", "gilli-fy5qjvjgoq.dcdeploy.cloud")
+DOMAIN = os.environ.get("DOMAIN", "")
 
 WORK_DIR = "/tmp"
 
@@ -33,19 +33,19 @@ def download_singbox():
     os.chmod(singbox_path, stat.S_IRWXU)
     return singbox_path
 
-# ========== sing-box 配置 ==========
+# ========== sing-box 配置（VLESS + HTTPUpgrade） ==========
 def write_singbox_config():
     config = {
         "log": {"level": "info"},
         "inbounds": [
             {
-                "type": "vmess",
+                "type": "vless",
                 "listen": "0.0.0.0",
                 "listen_port": PORT,
-                "users": [{"uuid": UUID, "alterId": 0}],
+                "users": [{"uuid": UUID, "flow": ""}],
                 "transport": {
-                    "type": "ws",
-                    "path": "/vmess"
+                    "type": "httpupgrade",
+                    "path": "/vless"
                 }
             }
         ],
@@ -71,28 +71,17 @@ def start_singbox():
     time.sleep(2)
     print("[*] sing-box started.")
 
-# ========== 生成节点链接 ==========
-def generate_vmess_link():
+# ========== 生成 VLESS 节点链接 ==========
+def generate_vless_link():
     if not DOMAIN:
         return None
-    config = {
-        "v": "2",
-        "ps": NAME,
-        "add": DOMAIN,
-        "port": "443",
-        "id": UUID,
-        "aid": "0",
-        "scy": "auto",
-        "net": "ws",
-        "type": "none",
-        "host": DOMAIN,
-        "path": "/vmess",
-        "tls": "tls",
-        "sni": DOMAIN,
-        "alpn": ""
-    }
-    encoded = base64.b64encode(json.dumps(config).encode()).decode()
-    return f"vmess://{encoded}"
+    link = (
+        f"vless://{UUID}@{DOMAIN}:443"
+        f"?encryption=none&security=tls&sni={DOMAIN}"
+        f"&type=httpupgrade&path=%2Fvless&host={DOMAIN}"
+        f"#{NAME}"
+    )
+    return link
 
 # ========== 路由 ==========
 @app.route('/')
@@ -101,27 +90,6 @@ def index():
 
 @app.route('/sub')
 def sub():
-    link = generate_vmess_link()
+    link = generate_vless_link()
     if not link:
-        return Response("Please set DOMAIN environment variable.", status=503)
-    encoded = base64.b64encode(link.encode()).decode()
-    return Response(encoded, mimetype='text/plain')
-
-@app.route('/info')
-def info():
-    link = generate_vmess_link()
-    return jsonify({
-        "name": NAME,
-        "domain": DOMAIN or "not set",
-        "port": 443,
-        "uuid": UUID,
-        "path": "/vmess",
-        "network": "ws",
-        "tls": "tls",
-        "vmess_link": link or "Set DOMAIN env var first"
-    })
-
-# ========== 启动 ==========
-if __name__ == '__main__':
-    threading.Thread(target=start_singbox, daemon=True).start()
-    app.run(host='0.0.0.0', port=PORT)
+        return Response("Please set
