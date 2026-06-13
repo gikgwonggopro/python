@@ -14,7 +14,7 @@ app = Flask(__name__)
 UUID = os.environ.get("UUID", "f929c4da-dc2e-4e0d-9a6f-1799036af214")
 PORT = int(os.environ.get("PORT", "8001"))
 NAME = os.environ.get("NAME", "dcdeploy-node")
-DOMAIN = os.environ.get("DOMAIN", "")        # 你的服务域名，部署后填入
+DOMAIN = os.environ.get("DOMAIN", "https://donna-fy5qjvjgoq.dcdeploy.cloud")        # 你的服务域名，部署后填入
 ACCESS_TOKEN = os.environ.get("ACCESS_TOKEN", "")
 
 WORK_DIR = "/tmp"
